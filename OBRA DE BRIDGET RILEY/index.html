@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Riley — Red Dominance</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<style>
+body{
+  background:#f5f0e8;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  margin:0;
+}
+canvas{ box-shadow:0 4px 24px rgba(120,90,60,0.12); display:block; }
+#mic-bar{
+  position:fixed;
+  bottom:14px;
+  left:50%;
+  transform:translateX(-50%);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  background:rgba(255,255,255,0.88);
+  border-radius:24px;
+  padding:6px 16px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.12);
+  font-family:system-ui,sans-serif;
+  font-size:12px;
+  color:#666;
+  z-index:10;
+  user-select:none;
+}
+#mic-btn{
+  background:none; border:none; cursor:pointer;
+  font-size:12px; font-family:inherit; color:#444; padding:0;
+}
+#mic-btn:hover{ color:#111; }
+#mic-status{ color:#999; }
+#mic-status.on{ color:#5aaa77; font-weight:600; }
+</style>
+</head>
+<body>
+
+<div id="mic-bar">
+  <button id="mic-btn">🎤 Activar micrófono</button>
+  <span id="mic-status">— sin micrófono —</span>
+</div>
+
+<script>
+
+const PALETTES = [
+  { bg:[240,226,204], a:[72,150,49],  b:[235,122,102], c:[171,171,171], d:[118,154,229] },
+  { bg:[240,226,204], a:[72,150,49],  b:[118,154,229], c:[171,171,171], d:[235,122,102] },
+  { bg:[240,226,204], a:[72,150,49],  b:[188,128,208], c:[171,171,171], d:[78,174,196]  },
+];
+
+new p5(function(p){
+
+const W=560, H=920, AMP=17, PHASE_STEP=0.40;
+const WV=11, WA=11, WS=11, WC=18, WG=21;
+
+const STRIPE_SEQ = [
+  ['a',WV],['d',WA],['bg',WC],['d',WA],['a',WV],['bg',WC],
+  ['a',WV],['d',WA],['c',WG],
+  ['b',WS],['a',WV],['bg',WC],['a',WV],['b',WS],['bg',WC],
+  ['b',WS],['a',WV],['c',WG],
+  ['a',WV],['d',WA],['bg',WC],['d',WA],['a',WV],['bg',WC],
+  ['a',WV],['d',WA],['c',WG],
+  ['b',WS],['a',WV],['bg',WC],['a',WV],['b',WS],['bg',WC],
+  ['b',WS],['a',WV],
+];
+
+const TOTAL_W = STRIPE_SEQ.reduce((s,e)=>s+e[1],0);
+const MARGIN  = (W-TOTAL_W)/2;
+
+const BOUNDS = (function(){
+  const arr=[]; let x=MARGIN, ph=0;
+  for(const [k,w] of STRIPE_SEQ){ arr.push({x,key:k,ph}); x+=w; ph+=PHASE_STEP; }
+  arr.push({x,key:null,ph});
+  return arr;
+})();
+
+// ── Paleta ─────────────────────────────────────────────────────────────────
+let palIdx=0, curPal=dc(PALETTES[0]), tgtPal=dc(PALETTES[0]), palT=1;
+function dc(o){ return JSON.parse(JSON.stringify(o)); }
+function lc(a,b,t){ return a.map((v,i)=>Math.round(v+(b[i]-v)*t)); }
+function capPal(){
+  const out={};
+  for(const k of ['bg','a','b','c','d'])
+    out[k] = palT>=1 ? [...curPal[k]] : lc(curPal[k],tgtPal[k],palT);
+  return out;
+}
+function getC(k){ return palT>=1 ? curPal[k] : lc(curPal[k],tgtPal[k],palT); }
+function switchPal(){
+  if(palT<1) return;
+  curPal=capPal(); palIdx=(palIdx+1)%PALETTES.length;
+  tgtPal=dc(PALETTES[palIdx]); palT=0;
+}
+
+// ── Animación ──────────────────────────────────────────────────────────────
+let offset=0, speed=0.4, tgtSpd=0.4;
+let ampMult=1, tgtAmpMult=1;
+let widenAmt=0, widenTgt=0;
+let holding=false, slowed=false, invertMotion=false, invertOrder=false, frozen=false;
+
+// ── Audio — variables expuestas al draw() para debug ───────────────────────
+let audioCtx=null, analyser=null, tDom=null, fBins=null, audioReady=false;
+let prevFBins=null;
+let rmsSmooth=0;          // media exponencial del RMS (~2s)
+let shushF=0, bassF=0, highF=0;
+
+// valores en tiempo real para overlay de debug
+let dbgRms=0, dbgFlux=0, dbgBass=0, dbgMid=0, dbgHigh=0, dbgShush=0;
+
+// Máquina de estados para onsets (chasquido / doble)
+// onsets[] = array de frameCount de cada onset reciente
+let onsets    = [];
+let onsetLock = 0;
+let colorCooldown = 0;  // bloquea "agudo sostenido" tras un cambio de color
+const DBL_WIN  = 20;    // frames para doble-chasquido  (~0.33 s)
+const SNAP_WIN = 40;    // frames para confirmar snap único (~0.67 s)
+
+let showDebug = false;
+
+// ── Inicializar micrófono ──────────────────────────────────────────────────
+async function initAudio(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
+    audioCtx = new(window.AudioContext||window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.4; // menos suavizado → onsets más nítidos
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    tDom     = new Float32Array(analyser.fftSize);
+    fBins    = new Uint8Array(analyser.frequencyBinCount);
+    prevFBins = new Uint8Array(analyser.frequencyBinCount);
+    audioReady = true;
+    const st = document.getElementById('mic-status');
+    st.textContent = '● activo'; st.className = 'on';
+    document.getElementById('mic-btn').textContent = '🎤';
+  }catch(e){
+    document.getElementById('mic-status').textContent = '✗ sin acceso';
+  }
+}
+
+// ── Flujo espectral (mejor onset que RMS-diff) ─────────────────────────────
+// Suma solo los incrementos positivos en el espectro entre frames.
+// Cada chasquido/palmada produce un pico de flux alto y breve.
+function spectralFlux(){
+  let f=0;
+  for(let i=0;i<fBins.length;i++){
+    const d = (fBins[i]-prevFBins[i])/255;
+    if(d>0) f+=d;
+  }
+  return f/fBins.length;
+}
+
+// ── Tick de audio ──────────────────────────────────────────────────────────
+function audioTick(){
+  if(!audioReady) return;
+  analyser.getFloatTimeDomainData(tDom);
+  analyser.getByteFrequencyData(fBins);
+
+  // RMS del frame actual
+  let s=0; for(const v of tDom) s+=v*v;
+  const rms = Math.sqrt(s/tDom.length);
+
+  // Flujo espectral
+  const flux = spectralFlux();
+  prevFBins.set(fBins);  // guardar frame actual para el siguiente
+
+  // Media exponencial del RMS (sirve como piso de ruido adaptativo)
+  rmsSmooth = rmsSmooth*0.97 + rms*0.03;
+
+  // Exponer para debug
+  dbgRms=rms; dbgFlux=flux;
+
+  // Silencio → resetear contadores de bandas
+  if(rms < 0.012){
+    bassF=highF=0;
+    if(shushF>0){ applyShush(); shushF=0; }
+    return;
+  }
+
+  // ── Bandas de frecuencia ────────────────────────────────────────────────
+  const bc=analyser.frequencyBinCount, nyq=audioCtx.sampleRate/2;
+  let B=0,Bc=0, M=0,Mc=0, H=0,Hc=0, Sh=0,Shc=0;
+  for(let i=0;i<bc;i++){
+    const hz = i*nyq/bc, e = fBins[i]/255;
+    if(hz<300)            { B+=e; Bc++; }
+    else if(hz<2500)      { M+=e; Mc++; }
+    else                  { H+=e; Hc++; }
+    if(hz>=3000&&hz<8000) { Sh+=e; Shc++; }  // banda fricativa del "sh"
+  }
+  const bass=Bc?B/Bc:0, mid=Mc?M/Mc:0, high=Hc?H/Hc:0;
+  const shushBand = Shc?Sh/Shc:0;
+
+  dbgBass=bass; dbgMid=mid; dbgHigh=high; dbgShush=shushBand;
+
+  // ── SHHH: ruido fricativo sostenido 3-8 kHz, sin graves ────────────────
+  // Umbral permisivo: el sonido "sh" concentra energía en la banda 3-8kHz
+  // y tiene muy pocos armónicos graves (a diferencia de voz o música)
+  const isShush = shushBand > 0.07
+               && shushBand > bass * 1.8
+               && shushBand > mid  * 1.2
+               && rms > 0.018;
+
+  if(isShush){
+    shushF++; bassF=highF=0;
+    return;   // no procesar otras bandas mientras dure el SHHH
+  } else if(shushF>0){
+    applyShush(); shushF=0;
+  }
+
+  // ── Grave dominante → sube velocidad ───────────────────────────────────
+  if(bass>0.20 && bass>mid*1.4 && bass>high*1.4){
+    if(++bassF>8) tgtSpd=Math.min(3.0, tgtSpd+0.05);
+  } else bassF=0;
+
+  // ── Agudo sostenido → contrae las líneas (reduce amplitud de onda)
+  if(high>0.16 && high>bass*1.3 && high>mid*1.1 && !isShush){
+    if(++highF>4) tgtAmpMult = Math.max(0.1, tgtAmpMult - 0.04);
+  } else {
+    if(highF>0) tgtAmpMult = 1.0; // restaurar al soltar el agudo
+    highF=0;
+  }
+  if(colorCooldown>0) colorCooldown--;
+
+  // ── Detección de onsets por flujo espectral adaptativo ─────────────────
+  const fluxThresh = Math.max(rmsSmooth * 1.5, 0.006);
+  const isOnset = flux > fluxThresh && rms > 0.025 && onsetLock <= 0;
+
+  if(isOnset){
+    onsetLock = 7;
+    const frame = p.frameCount;
+
+    // Palma: onset broadband (graves + agudos presentes juntos = aplauso)
+    if(bass > 0.10 && high > 0.10 && mid > 0.08 && colorCooldown===0){
+      switchPal();
+      colorCooldown = 45;
+    } else {
+      // Onset sin patrón de palma → snap / doble-chasquido
+      onsets = onsets.filter(t => frame-t < 120);
+      onsets.push(frame);
+
+      if(onsets.length === 2 && (frame-onsets[0]) < DBL_WIN){
+        // 2 onsets en <0.33s = doble-chasquido → widen
+        widenTgt = widenTgt>0.5 ? 0 : 1;
+        onsets = [];
+      }
+      // 1 onset: espera que expire SNAP_WIN para confirmar cambio de dirección
+    }
+  }
+  if(onsetLock>0) onsetLock--;
+}
+
+// ── SHHH sostenido >~0.65s → resetear todo ─────────────────────────────────
+function applyShush(){
+  if(shushF > 40) resetSketch();
+}
+
+// ── Confirmar snap único (se llama desde draw cada frame) ─────────────────
+function tickOnsets(){
+  if(onsets.length === 0) return;
+  const lastT = onsets[onsets.length-1];
+  if(p.frameCount - lastT > SNAP_WIN){
+    if(onsets.length === 1) invertMotion = !invertMotion; // snap único → dirección
+    // 2-3 onsets no clasificados → ignorar (evita falsos positivos)
+    onsets = [];
+  }
+}
+
+// ── Onda ───────────────────────────────────────────────────────────────────
+function wave(y,ph){
+  const prog=y/H, t=offset*0.05;
+  const a = AMP * ampMult;
+  let w = Math.sin(prog*Math.PI*3.4+ph+t)*a
+        + Math.sin(prog*Math.PI*6.8+ph*1.4+t*1.55)*(a*0.22);
+  if(widenAmt>0.001) w *= 1+(1-Math.abs(prog-0.5)*2)*widenAmt;
+  return w;
+}
+
+// ── Setup / Draw ───────────────────────────────────────────────────────────
+p.setup = function(){
+  p.createCanvas(W, H);
+  p.noStroke();
+  document.getElementById('mic-btn').addEventListener('click', initAudio);
+};
+
+p.draw = function(){
+  if(palT<1){ palT=Math.min(1,palT+0.025); if(palT>=1) curPal=dc(tgtPal); }
+
+  audioTick();
+  tickOnsets();
+
+  // Prioridad de velocidad: mouse > espacio > audio > default
+  if(holding)      tgtSpd = Math.min(3.0, tgtSpd+0.05);
+  else if(slowed)  tgtSpd = 0.05;
+  else if(!audioReady) tgtSpd = 0.4;
+  else if(bassF===0 && highF===0) tgtSpd += (0.4 - tgtSpd) * 0.025;
+
+  speed    += (tgtSpd    - speed)    * 0.04;
+  widenAmt += (widenTgt  - widenAmt) * 0.04;
+  ampMult  += (tgtAmpMult - ampMult) * 0.018; // recuperación lenta al soltar el agudo
+  offset   += speed * (invertMotion ? -1 : 1);
+
+  const bg = getC('bg');
+  p.background(bg[0], bg[1], bg[2]);
+
+  const last = BOUNDS.length-1;
+  for(let i=0; i<last; i++){
+    const L=BOUNDS[i], R=BOUNDS[i+1];
+    const ck = invertOrder ? BOUNDS[last-1-i].key : L.key;
+    const c = getC(ck);
+    p.fill(c[0], c[1], c[2]);
+    p.beginShape();
+    for(let y=0; y<=H; y+=3) p.vertex(L.x+wave(y,L.ph), y);
+    for(let y=H;  y>=0; y-=3) p.vertex(R.x+wave(y,R.ph), y);
+    p.endShape(p.CLOSE);
+  }
+
+  // ── Overlay de debug (tecla D) ─────────────────────────────────────────
+  if(showDebug && audioReady){
+    p.noStroke();
+    p.fill(0, 0, 0, 175);
+    p.rect(8, 8, 192, 130, 6);
+    p.fill(255);
+    p.textAlign(p.LEFT, p.TOP);
+    p.textSize(10);
+    p.textFont('monospace');
+    const row = (label, val, y) => p.text(label+' '+val, 16, y);
+    row('rms:  ', dbgRms.toFixed(4),    18);
+    row('flux: ', dbgFlux.toFixed(5),   30);
+    row('bass: ', dbgBass.toFixed(3),   42);
+    row('mid:  ', dbgMid.toFixed(3),    54);
+    row('high: ', dbgHigh.toFixed(3),   66);
+    row('shush:', dbgShush.toFixed(3),  78);
+    row('shushF:',shushF+'  bassF:'+bassF+' hF:'+highF, 90);
+    row('onsets:',onsets.length+'  colCD:'+colorCooldown, 102);
+    row('spd:  ', speed.toFixed(2),     114);
+    row('amp:  ', ampMult.toFixed(2),   126);
+    p.textAlign(p.LEFT, p.BASELINE);
+  }
+};
+
+p.mousePressed  = function(){ holding=true; };
+p.mouseReleased = function(){ holding=false; };
+
+p.keyPressed = function(){
+  const k = p.key.toLowerCase();
+  if(k==='c') switchPal();
+  if(k==='w') widenTgt = widenTgt>0.5 ? 0 : 1;
+  if(k==='b') invertOrder  = !invertOrder;
+  if(k==='i') invertMotion = !invertMotion;
+  if(k==='d') showDebug    = !showDebug;
+  if(k==='f'){ frozen=!frozen; frozen ? p.noLoop() : p.loop(); }
+  if(k==='r') resetSketch();
+  if(p.key===' '){ slowed=true; return false; }
+  return false;
+};
+p.keyReleased = function(){ if(p.key===' ') slowed=false; return false; };
+
+function resetSketch(){
+  offset=0; speed=0.4; tgtSpd=0.4; ampMult=1; tgtAmpMult=1;
+  widenAmt=0; widenTgt=0;
+  invertMotion=false; invertOrder=false; slowed=false; frozen=false;
+  bassF=highF=shushF=0; onsets=[]; onsetLock=0; colorCooldown=0;
+  palIdx=0; curPal=dc(PALETTES[0]); tgtPal=dc(PALETTES[0]); palT=1;
+  p.loop();
+}
+
+});
+</script>
+</body>
+</html>
