@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Riley â Red Dominance</title>
+<title>Riley - Red Dominance</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 <style>
 body{
@@ -45,8 +45,8 @@ canvas{ box-shadow:0 4px 24px rgba(120,90,60,0.12); display:block; }
 <body>
 
 <div id="mic-bar">
-  <button id="mic-btn">ð¤ Activar micrÃ³fono</button>
-  <span id="mic-status">â sin micrÃ³fono â</span>
+  <button id="mic-btn">[Mic] Activar micrófono</button>
+  <span id="mic-status">[ sin microfono ]</span>
 </div>
 
 <script>
@@ -83,7 +83,7 @@ const BOUNDS = (function(){
   return arr;
 })();
 
-// ââ Paleta âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Paleta -----------------------------------------------------------------
 let palIdx=0, curPal=dc(PALETTES[0]), tgtPal=dc(PALETTES[0]), palT=1;
 function dc(o){ return JSON.parse(JSON.stringify(o)); }
 function lc(a,b,t){ return a.map((v,i)=>Math.round(v+(b[i]-v)*t)); }
@@ -100,13 +100,13 @@ function switchPal(){
   tgtPal=dc(PALETTES[palIdx]); palT=0;
 }
 
-// ââ AnimaciÃ³n ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Animación --------------------------------------------------------------
 let offset=0, speed=0.4, tgtSpd=0.4;
 let ampMult=1, tgtAmpMult=1;
 let widenAmt=0, widenTgt=0;
 let holding=false, slowed=false, invertMotion=false, invertOrder=false, frozen=false;
 
-// ââ Audio â variables expuestas al draw() para debug âââââââââââââââââââââââ
+// -- Audio - variables expuestas al draw() para debug -----------------------
 let audioCtx=null, analyser=null, tDom=null, fBins=null, audioReady=false;
 let prevFBins=null;
 let rmsSmooth=0;          // media exponencial del RMS (~2s)
@@ -115,38 +115,38 @@ let shushF=0, bassF=0, highF=0;
 // valores en tiempo real para overlay de debug
 let dbgRms=0, dbgFlux=0, dbgBass=0, dbgMid=0, dbgHigh=0, dbgShush=0;
 
-// MÃ¡quina de estados para onsets (chasquido / doble)
+// Máquina de estados para onsets (chasquido / doble)
 // onsets[] = array de frameCount de cada onset reciente
 let onsets    = [];
 let onsetLock = 0;
 let colorCooldown = 0;  // bloquea "agudo sostenido" tras un cambio de color
 const DBL_WIN  = 20;    // frames para doble-chasquido  (~0.33 s)
-const SNAP_WIN = 40;    // frames para confirmar snap Ãºnico (~0.67 s)
+const SNAP_WIN = 40;    // frames para confirmar snap único (~0.67 s)
 
 let showDebug = false;
 
-// ââ Inicializar micrÃ³fono ââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Inicializar micrófono --------------------------------------------------
 async function initAudio(){
   try{
     const stream = await navigator.mediaDevices.getUserMedia({audio:true,video:false});
     audioCtx = new(window.AudioContext||window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.4; // menos suavizado â onsets mÃ¡s nÃ­tidos
+    analyser.smoothingTimeConstant = 0.4; // menos suavizado -> onsets más nítidos
     audioCtx.createMediaStreamSource(stream).connect(analyser);
     tDom     = new Float32Array(analyser.fftSize);
     fBins    = new Uint8Array(analyser.frequencyBinCount);
     prevFBins = new Uint8Array(analyser.frequencyBinCount);
     audioReady = true;
     const st = document.getElementById('mic-status');
-    st.textContent = 'â activo'; st.className = 'on';
-    document.getElementById('mic-btn').textContent = 'ð¤';
+    st.textContent = 'activo'; st.className = 'on';
+    document.getElementById('mic-btn').textContent = '[Mic]';
   }catch(e){
-    document.getElementById('mic-status').textContent = 'â sin acceso';
+    document.getElementById('mic-status').textContent = 'sin acceso';
   }
 }
 
-// ââ Flujo espectral (mejor onset que RMS-diff) âââââââââââââââââââââââââââââ
+// -- Flujo espectral (mejor onset que RMS-diff) -----------------------------
 // Suma solo los incrementos positivos en el espectro entre frames.
 // Cada chasquido/palmada produce un pico de flux alto y breve.
 function spectralFlux(){
@@ -158,7 +158,7 @@ function spectralFlux(){
   return f/fBins.length;
 }
 
-// ââ Tick de audio ââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Tick de audio ----------------------------------------------------------
 function audioTick(){
   if(!audioReady) return;
   analyser.getFloatTimeDomainData(tDom);
@@ -178,14 +178,14 @@ function audioTick(){
   // Exponer para debug
   dbgRms=rms; dbgFlux=flux;
 
-  // Silencio â resetear contadores de bandas
+  // Silencio -> resetear contadores de bandas
   if(rms < 0.012){
     bassF=highF=0;
     if(shushF>0){ applyShush(); shushF=0; }
     return;
   }
 
-  // ââ Bandas de frecuencia ââââââââââââââââââââââââââââââââââââââââââââââââ
+  // -- Bandas de frecuencia ------------------------------------------------
   const bc=analyser.frequencyBinCount, nyq=audioCtx.sampleRate/2;
   let B=0,Bc=0, M=0,Mc=0, H=0,Hc=0, Sh=0,Shc=0;
   for(let i=0;i<bc;i++){
@@ -200,9 +200,9 @@ function audioTick(){
 
   dbgBass=bass; dbgMid=mid; dbgHigh=high; dbgShush=shushBand;
 
-  // ââ SHHH: ruido fricativo sostenido 3-8 kHz, sin graves ââââââââââââââââ
-  // Umbral permisivo: el sonido "sh" concentra energÃ­a en la banda 3-8kHz
-  // y tiene muy pocos armÃ³nicos graves (a diferencia de voz o mÃºsica)
+  // -- SHHH: ruido fricativo sostenido 3-8 kHz, sin graves ----------------
+  // Umbral permisivo: el sonido "sh" concentra energía en la banda 3-8kHz
+  // y tiene muy pocos armónicos graves (a diferencia de voz o música)
   const isShush = shushBand > 0.07
                && shushBand > bass * 1.8
                && shushBand > mid  * 1.2
@@ -215,12 +215,12 @@ function audioTick(){
     applyShush(); shushF=0;
   }
 
-  // ââ Grave dominante â sube velocidad âââââââââââââââââââââââââââââââââââ
+  // -- Grave dominante -> sube velocidad -----------------------------------
   if(bass>0.20 && bass>mid*1.4 && bass>high*1.4){
     if(++bassF>8) tgtSpd=Math.min(3.0, tgtSpd+0.05);
   } else bassF=0;
 
-  // ââ Agudo sostenido â contrae las lÃ­neas (reduce amplitud de onda)
+  // -- Agudo sostenido -> contrae las líneas (reduce amplitud de onda)
   if(high>0.16 && high>bass*1.3 && high>mid*1.1 && !isShush){
     if(++highF>4) tgtAmpMult = Math.max(0.1, tgtAmpMult - 0.04);
   } else {
@@ -229,7 +229,7 @@ function audioTick(){
   }
   if(colorCooldown>0) colorCooldown--;
 
-  // ââ DetecciÃ³n de onsets por flujo espectral adaptativo âââââââââââââââââ
+  // -- Detección de onsets por flujo espectral adaptativo -----------------
   const fluxThresh = Math.max(rmsSmooth * 1.5, 0.006);
   const isOnset = flux > fluxThresh && rms > 0.025 && onsetLock <= 0;
 
@@ -242,38 +242,38 @@ function audioTick(){
       switchPal();
       colorCooldown = 45;
     } else {
-      // Onset sin patrÃ³n de palma â snap / doble-chasquido
+      // Onset sin patrón de palma -> snap / doble-chasquido
       onsets = onsets.filter(t => frame-t < 120);
       onsets.push(frame);
 
       if(onsets.length === 2 && (frame-onsets[0]) < DBL_WIN){
-        // 2 onsets en <0.33s = doble-chasquido â widen
+        // 2 onsets en <0.33s = doble-chasquido -> widen
         widenTgt = widenTgt>0.5 ? 0 : 1;
         onsets = [];
       }
-      // 1 onset: espera que expire SNAP_WIN para confirmar cambio de direcciÃ³n
+      // 1 onset: espera que expire SNAP_WIN para confirmar cambio de dirección
     }
   }
   if(onsetLock>0) onsetLock--;
 }
 
-// ââ SHHH sostenido >~0.65s â resetear todo âââââââââââââââââââââââââââââââââ
+// -- SHHH sostenido >~0.65s -> resetear todo ---------------------------------
 function applyShush(){
   if(shushF > 40) resetSketch();
 }
 
-// ââ Confirmar snap Ãºnico (se llama desde draw cada frame) âââââââââââââââââ
+// -- Confirmar snap único (se llama desde draw cada frame) -----------------
 function tickOnsets(){
   if(onsets.length === 0) return;
   const lastT = onsets[onsets.length-1];
   if(p.frameCount - lastT > SNAP_WIN){
-    if(onsets.length === 1) invertMotion = !invertMotion; // snap Ãºnico â direcciÃ³n
-    // 2-3 onsets no clasificados â ignorar (evita falsos positivos)
+    if(onsets.length === 1) invertMotion = !invertMotion; // snap único -> dirección
+    // 2-3 onsets no clasificados -> ignorar (evita falsos positivos)
     onsets = [];
   }
 }
 
-// ââ Onda âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Onda -------------------------------------------------------------------
 function wave(y,ph){
   const prog=y/H, t=offset*0.05;
   const a = AMP * ampMult;
@@ -283,7 +283,7 @@ function wave(y,ph){
   return w;
 }
 
-// ââ Setup / Draw âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+// -- Setup / Draw -----------------------------------------------------------
 p.setup = function(){
   p.createCanvas(W, H);
   p.noStroke();
@@ -304,7 +304,7 @@ p.draw = function(){
 
   speed    += (tgtSpd    - speed)    * 0.04;
   widenAmt += (widenTgt  - widenAmt) * 0.04;
-  ampMult  += (tgtAmpMult - ampMult) * 0.018; // recuperaciÃ³n lenta al soltar el agudo
+  ampMult  += (tgtAmpMult - ampMult) * 0.018; // recuperación lenta al soltar el agudo
   offset   += speed * (invertMotion ? -1 : 1);
 
   const bg = getC('bg');
@@ -322,7 +322,7 @@ p.draw = function(){
     p.endShape(p.CLOSE);
   }
 
-  // ââ Overlay de debug (tecla D) âââââââââââââââââââââââââââââââââââââââââ
+  // -- Overlay de debug (tecla D) -----------------------------------------
   if(showDebug && audioReady){
     p.noStroke();
     p.fill(0, 0, 0, 175);
